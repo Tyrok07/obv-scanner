@@ -18,7 +18,7 @@ st.markdown('<p class="big-font">🦎 CoinGecko Altyapılı Gelişmiş OBV Hacim
 st.write("Fiyat hareketlerini gerçek hacim trendleriyle doğrulayarak balina akümülasyonunu kategorilere göre filtreleyin.")
 
 # ─── API AYARLARI ───────────────────────────────────────────────
-API_KEY  = "CG-9Ptz6CSLLoR8qwsRq2xFu88X"
+API_KEY = st.secrets["CG_API_KEY"]
 BASE_URL = "https://api.coingecko.com/api/v3"
 HEADERS  = {"accept": "application/json", "x-cg-demo-api-key": API_KEY}
 
