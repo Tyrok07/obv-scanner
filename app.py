@@ -5,7 +5,6 @@ import time
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from supabase import create_client
 from datetime import datetime
 
 # ─── SAYFA AYARLARI ─────────────────────────────────────────────
@@ -28,12 +27,15 @@ API_KEY  = st.secrets["CG_API_KEY"]
 BASE_URL = "https://api.coingecko.com/api/v3"
 HEADERS  = {"accept": "application/json", "x-cg-demo-api-key": API_KEY}
 
-# ─── SUPABASE BAĞLANTISI ────────────────────────────────────────
-@st.cache_resource
-def supabase_baglanti():
-    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
-
-supabase = supabase_baglanti()
+# ─── SUPABASE REST API (kütüphanesiz) ───────────────────────────
+SB_URL = st.secrets["SUPABASE_URL"]
+SB_KEY = st.secrets["SUPABASE_KEY"]
+SB_HEADERS = {
+    "apikey": SB_KEY,
+    "Authorization": f"Bearer {SB_KEY}",
+    "Content-Type": "application/json",
+    "Prefer": "return=representation"
+}
 
 
 # ─── OBV FONKSİYONLARI ──────────────────────────────────────────
@@ -190,37 +192,54 @@ def guncel_fiyat_getir(coin_id):
 # ─── SUPABASE TAKİP FONKSİYONLARI ──────────────────────────────
 def takip_listesi_getir():
     try:
-        res = supabase.table("takip_listesi").select("*").execute()
-        return res.data if res.data else []
+        res = requests.get(
+            f"{SB_URL}/rest/v1/takip_listesi?select=*",
+            headers=SB_HEADERS, timeout=10
+        )
+        if res.status_code == 200:
+            return res.json()
     except Exception:
-        return []
+        pass
+    return []
 
 
 def takibe_ekle(coin_id, coin_adi, sembol, fiyat, sinyal):
     try:
         # Zaten takipte mi?
-        mevcut = supabase.table("takip_listesi")\
-            .select("coin_id").eq("coin_id", coin_id).execute()
-        if mevcut.data:
+        kontrol = requests.get(
+            f"{SB_URL}/rest/v1/takip_listesi?coin_id=eq.{coin_id}",
+            headers=SB_HEADERS, timeout=10
+        )
+        if kontrol.status_code == 200 and len(kontrol.json()) > 0:
             return False, "zaten_var"
 
-        supabase.table("takip_listesi").insert({
-            "coin_id":          coin_id,
-            "coin_adi":         coin_adi,
-            "sembol":           sembol,
-            "baslangic_fiyat":  fiyat,
-            "baslangic_sinyal": sinyal,
-            "eklenme_tarihi":   datetime.now().strftime("%Y-%m-%d %H:%M"),
-        }).execute()
-        return True, "eklendi"
+        res = requests.post(
+            f"{SB_URL}/rest/v1/takip_listesi",
+            headers=SB_HEADERS,
+            json={
+                "coin_id":          coin_id,
+                "coin_adi":         coin_adi,
+                "sembol":           sembol,
+                "baslangic_fiyat":  fiyat,
+                "baslangic_sinyal": sinyal,
+                "eklenme_tarihi":   datetime.now().strftime("%Y-%m-%d %H:%M"),
+            },
+            timeout=10
+        )
+        if res.status_code in [200, 201]:
+            return True, "eklendi"
+        return False, res.text
     except Exception as e:
         return False, str(e)
 
 
 def takipten_cikar(coin_id):
     try:
-        supabase.table("takip_listesi").delete().eq("coin_id", coin_id).execute()
-        return True
+        res = requests.delete(
+            f"{SB_URL}/rest/v1/takip_listesi?coin_id=eq.{coin_id}",
+            headers=SB_HEADERS, timeout=10
+        )
+        return res.status_code in [200, 204]
     except Exception:
         return False
 
