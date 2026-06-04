@@ -3,4 +3,4 @@ pandas
 requests
 numpy
 plotly
-supabase
+supabase==2.3.0
