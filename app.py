@@ -342,6 +342,12 @@ obv_hassasiyet  = st.sidebar.select_slider(
 tarama_butonu = st.sidebar.button("Piyasayı Canlı Tara 🚀", use_container_width=True)
 
 
+# ─── SESSION STATE ──────────────────────────────────────────────
+if 'tarama_ham' not in st.session_state:
+    st.session_state['tarama_ham'] = []
+if 'df_sonuc' not in st.session_state:
+    st.session_state['df_sonuc'] = pd.DataFrame()
+
 # ─── ANA SEKMELER ───────────────────────────────────────────────
 sekme1, sekme2, sekme3 = st.tabs(["📡 Piyasa Tarama", "🔍 Coin Ara", "⭐ Takip Listesi"])
 
@@ -383,7 +389,7 @@ with sekme1:
             st.stop()
 
         sonuc_tablosu = []
-        tarama_ham    = []  # takip butonu için ham veri
+        st.session_state['tarama_ham'] = []
         progres_bari  = st.progress(0)
         durum_yazisi  = st.empty()
 
@@ -436,7 +442,7 @@ with sekme1:
                             "OBV Dengesi %":  round(obv_dengesi, 2),
                             "OBV Sinyali":    sinyal,
                         })
-                        tarama_ham.append({
+                        st.session_state['tarama_ham'].append({
                             "coin_id": coin_id, "coin_adi": coin_name,
                             "sembol": coin_symbol, "fiyat": current_price, "sinyal": sinyal
                         })
@@ -448,102 +454,104 @@ with sekme1:
 
         durum_yazisi.empty()
         df_sonuc = pd.DataFrame(sonuc_tablosu)
+        st.session_state['df_sonuc'] = df_sonuc
 
-        if not df_sonuc.empty:
-            st.success(f"📊 {len(df_sonuc)} coin OBV süzgecinden geçirildi!")
+    # Tarama sonuçlarını session state'den göster
+    df_sonuc = st.session_state['df_sonuc']
 
-            pozitif        = df_sonuc[df_sonuc['OBV Sinyali'].str.contains("POZİTİF", na=False)]
-            negatif        = df_sonuc[df_sonuc['OBV Sinyali'].str.contains("NEGATİF", na=False)]
-            hacim_destekli = df_sonuc[df_sonuc['OBV Sinyali'].str.contains("YÜKSELİŞ", na=False)]
+    if not df_sonuc.empty:
+        st.success(f"📊 {len(df_sonuc)} coin OBV süzgecinden geçirildi!")
 
-            c1, c2, c3 = st.columns(3)
-            c1.metric("🐋 Balina Toplayan Coin",    len(pozitif))
-            c2.metric("🚨 Riskli / Şişen Coin",     len(negatif))
-            c3.metric("📈 Hacim Destekli Yükseliş", len(hacim_destekli))
+        pozitif        = df_sonuc[df_sonuc['OBV Sinyali'].str.contains("POZİTİF", na=False)]
+        negatif        = df_sonuc[df_sonuc['OBV Sinyali'].str.contains("NEGATİF", na=False)]
+        hacim_destekli = df_sonuc[df_sonuc['OBV Sinyali'].str.contains("YÜKSELİŞ", na=False)]
 
-            st.markdown("---")
-            link_config = {
-                "Coin Adı Metin": st.column_config.TextColumn("Coin Adı"),
-                "Coin Adı":       st.column_config.LinkColumn("🔗 CG", display_text="🔗"),
-            }
+        c1, c2, c3 = st.columns(3)
+        c1.metric("🐋 Balina Toplayan Coin",    len(pozitif))
+        c2.metric("🚨 Riskli / Şişen Coin",     len(negatif))
+        c3.metric("📈 Hacim Destekli Yükseliş", len(hacim_destekli))
 
-            col_sol, col_orta, col_sag = st.columns(3)
-            with col_sol:
-                st.markdown("### 🔵 Potansiyel Alım Fırsatları")
-                if not pozitif.empty:
-                    st.dataframe(
-                        pozitif[["Coin Adı Metin","Coin Adı","Sembol","Fiyat ($)","OBV Dengesi %","24s Hacim ($)"]],
-                        column_config=link_config, use_container_width=True, hide_index=True,
-                    )
-            with col_orta:
-                st.markdown("### 🟢 Hacim Destekli Yükseliş")
-                if not hacim_destekli.empty:
-                    st.dataframe(
-                        hacim_destekli[["Coin Adı Metin","Coin Adı","Sembol","24s Değişim %","OBV Dengesi %","24s Hacim ($)"]],
-                        column_config=link_config, use_container_width=True, hide_index=True,
-                    )
-            with col_sag:
-                st.markdown("### 🔴 Potansiyel Satış / Kar Al Bölgeleri")
-                if not negatif.empty:
-                    st.dataframe(
-                        negatif[["Coin Adı Metin","Coin Adı","Sembol","Fiyat ($)","OBV Dengesi %","24s Hacim ($)"]],
-                        column_config=link_config, use_container_width=True, hide_index=True,
-                    )
+        st.markdown("---")
+        link_config = {
+            "Coin Adı Metin": st.column_config.TextColumn("Coin Adı"),
+            "Coin Adı":       st.column_config.LinkColumn("🔗 CG", display_text="🔗"),
+        }
 
-            st.markdown("---")
-            st.subheader("📋 Tüm Piyasa Tablosu")
-            st.dataframe(
-                df_sonuc.style.format({
-                    "Fiyat ($)": "{:,.4f}", "Market Cap ($)": "{:,.0f}",
-                    "24s Hacim ($)": "{:,.0f}", "OBV Dengesi %": "{:,.2f}",
-                    "24s Değişim %": "{:,.2f}",
-                }).map(renklendir_sinyal, subset=['OBV Sinyali']),
-                column_config=link_config, use_container_width=True, hide_index=True,
-            )
+        col_sol, col_orta, col_sag = st.columns(3)
+        with col_sol:
+            st.markdown("### 🔵 Potansiyel Alım Fırsatları")
+            if not pozitif.empty:
+                st.dataframe(
+                    pozitif[["Coin Adı Metin","Coin Adı","Sembol","Fiyat ($)","OBV Dengesi %","24s Hacim ($)"]],
+                    column_config=link_config, use_container_width=True, hide_index=True,
+                )
+        with col_orta:
+            st.markdown("### 🟢 Hacim Destekli Yükseliş")
+            if not hacim_destekli.empty:
+                st.dataframe(
+                    hacim_destekli[["Coin Adı Metin","Coin Adı","Sembol","24s Değişim %","OBV Dengesi %","24s Hacim ($)"]],
+                    column_config=link_config, use_container_width=True, hide_index=True,
+                )
+        with col_sag:
+            st.markdown("### 🔴 Potansiyel Satış / Kar Al Bölgeleri")
+            if not negatif.empty:
+                st.dataframe(
+                    negatif[["Coin Adı Metin","Coin Adı","Sembol","Fiyat ($)","OBV Dengesi %","24s Hacim ($)"]],
+                    column_config=link_config, use_container_width=True, hide_index=True,
+                )
 
-            # ─── TAKİBE AL BÖLÜMÜ ────────────────────────────────
-            st.markdown("---")
-            st.subheader("⭐ Takibe Al")
-            st.write("Sinyal veren coinleri takip listene ekle, günler içindeki performansını izle.")
+        st.markdown("---")
+        st.subheader("📋 Tüm Piyasa Tablosu")
+        st.dataframe(
+            df_sonuc.style.format({
+                "Fiyat ($)": "{:,.4f}", "Market Cap ($)": "{:,.0f}",
+                "24s Hacim ($)": "{:,.0f}", "OBV Dengesi %": "{:,.2f}",
+                "24s Değişim %": "{:,.2f}",
+            }).map(renklendir_sinyal, subset=['OBV Sinyali']),
+            column_config=link_config, use_container_width=True, hide_index=True,
+        )
 
-            # Sadece sinyal veren coinleri göster (nötr hariç)
-            sinyal_verenler = [c for c in tarama_ham if "Nötr" not in c['sinyal'] and "Yetersiz" not in c['sinyal']]
+        # ─── TAKİBE AL BÖLÜMÜ ────────────────────────────────
+        st.markdown("---")
+        st.subheader("⭐ Takibe Al")
+        st.write("Sinyal veren coinleri takip listene ekle, günler içindeki performansını izle.")
 
-            if sinyal_verenler:
-                secenekler = {f"{c['coin_adi']} ({c['sembol']}) — {c['sinyal']}": c for c in sinyal_verenler}
-                secilen_coin_str = st.selectbox("Takibe almak istediğin coin:", list(secenekler.keys()))
-                secilen_coin_data = secenekler[secilen_coin_str]
+        sinyal_verenler = [c for c in st.session_state['tarama_ham'] 
+                           if "Nötr" not in c['sinyal'] and "Yetersiz" not in c['sinyal']]
 
-                if st.button("➕ Takip Listesine Ekle", use_container_width=False):
-                    basari, mesaj = takibe_ekle(
-                        secilen_coin_data['coin_id'],
-                        secilen_coin_data['coin_adi'],
-                        secilen_coin_data['sembol'],
-                        secilen_coin_data['fiyat'],
-                        secilen_coin_data['sinyal'],
-                    )
-                    if basari:
-                        st.success(f"✅ {secilen_coin_data['coin_adi']} takip listesine eklendi!")
-                        st.balloons()
-                    elif mesaj == "zaten_var":
-                        st.info(f"ℹ️ {secilen_coin_data['coin_adi']} zaten takip listende.")
-                    else:
-                        st.error(f"Hata: {mesaj}")
-            else:
-                st.info("Sinyal veren coin bulunamadı. Taramayı tekrar çalıştırın.")
+        if sinyal_verenler:
+            secenekler = {f"{c['coin_adi']} ({c['sembol']}) — {c['sinyal']}": c for c in sinyal_verenler}
+            secilen_coin_str = st.selectbox("Takibe almak istediğin coin:", list(secenekler.keys()))
+            secilen_coin_data = secenekler[secilen_coin_str]
 
-            # İstatistiksel özet
-            st.markdown("---")
-            st.subheader("📈 OBV İstatistiksel Özeti")
-            pozitif_obv = df_sonuc[df_sonuc['OBV Dengesi %'] > 0]
-            negatif_obv = df_sonuc[df_sonuc['OBV Dengesi %'] < 0]
-            col_a, col_b = st.columns(2)
-            col_a.metric("🟢 Pozitif OBV Dengesi", len(pozitif_obv),
-                         delta=f"%{pozitif_obv['OBV Dengesi %'].mean():.1f}" if not pozitif_obv.empty else "0")
-            col_b.metric("🔴 Negatif OBV Dengesi", len(negatif_obv),
-                         delta=f"%{negatif_obv['OBV Dengesi %'].mean():.1f}" if not negatif_obv.empty else "0")
+            if st.button("➕ Takip Listesine Ekle", use_container_width=False):
+                basari, mesaj = takibe_ekle(
+                    secilen_coin_data['coin_id'],
+                    secilen_coin_data['coin_adi'],
+                    secilen_coin_data['sembol'],
+                    secilen_coin_data['fiyat'],
+                    secilen_coin_data['sinyal'],
+                )
+                if basari:
+                    st.success(f"✅ {secilen_coin_data['coin_adi']} takip listesine eklendi!")
+                    st.balloons()
+                elif mesaj == "zaten_var":
+                    st.info(f"ℹ️ {secilen_coin_data['coin_adi']} zaten takip listende.")
+                else:
+                    st.error(f"Hata: {mesaj}")
         else:
-            st.error("Tablo oluşturulamadı. Lütfen birkaç dakika sonra tekrar çalıştırın.")
+            st.info("Sinyal veren coin bulunamadı. Taramayı tekrar çalıştırın.")
+
+        # İstatistiksel özet
+        st.markdown("---")
+        st.subheader("📈 OBV İstatistiksel Özeti")
+        pozitif_obv = df_sonuc[df_sonuc['OBV Dengesi %'] > 0]
+        negatif_obv = df_sonuc[df_sonuc['OBV Dengesi %'] < 0]
+        col_a, col_b = st.columns(2)
+        col_a.metric("🟢 Pozitif OBV Dengesi", len(pozitif_obv),
+                     delta=f"%{pozitif_obv['OBV Dengesi %'].mean():.1f}" if not pozitif_obv.empty else "0")
+        col_b.metric("🔴 Negatif OBV Dengesi", len(negatif_obv),
+                     delta=f"%{negatif_obv['OBV Dengesi %'].mean():.1f}" if not negatif_obv.empty else "0")
 
 
 # ════════════════════════════════════════════════════════════════
