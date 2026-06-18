@@ -6,6 +6,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
+import anthropic
 
 # ─── SAYFA AYARLARI ─────────────────────────────────────────────
 st.set_page_config(page_title="OBV Pro Scanner", layout="wide", page_icon="🐋")
@@ -36,6 +37,53 @@ SB_HEADERS = {
     "Content-Type": "application/json",
     "Prefer": "return=representation"
 }
+
+
+# ─── AI GURU YORUM ALTYAPISI ────────────────────────────────────
+# Bu bölüm AI'a HİÇBİR ham fiyat verisi göndermez. AI sadece, kodun
+# zaten hesapladığı gerçek OBV/sinyal/yüzde değerlerini alır ve bunları
+# bir teknik analist diliyle yorumlar. AI sayı üretmez, sadece üretilmiş
+# sayıları açıklar/değerlendirir.
+
+GURU_SISTEM_PROMPT = """Sen deneyimli, soğukkanlı bir kripto piyasa teknik analistisin. Lakabın "Guru".
+Sana verilen veriler CoinGecko API'sinden çekilmiş gerçek fiyat ve hacim verilerinden
+bu uygulama tarafından zaten hesaplanmış OBV (On-Balance Volume) metrikleridir.
+
+KURALLARIN:
+1. SADECE sana verilen sayısal verilere dayanarak yorum yap. Veride olmayan kesin fiyat
+   hedefi, "X gün içinde Y olur" gibi öngörülerde ASLA bulunma. Veri dışı varsayım üretme.
+2. OBV ile fiyat arasındaki uyum/uyumsuzluğun teknik anlamını açıkla (balina birikimi,
+   dağıtım, sahte kırılım, hacim onaylı trend vb.).
+3. Riskleri belirt ve yanıtının sonunda "Bu bir yatırım tavsiyesi değildir." ifadesini ekle.
+4. Akıcı paragraflar halinde, en fazla 180 kelime, madde işareti kullanmadan yaz.
+5. Veri yetersiz veya çelişkiliyse bunu açıkça söyle; sallama yapma.
+"""
+
+
+@st.cache_resource
+def ai_istemci_al():
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return None
+    return anthropic.Anthropic(api_key=api_key)
+
+
+def ai_guru_yorumu_uret(veri_metni):
+    """Uygulamanın hesapladığı gerçek verileri AI'a gönderip guru yorumu üretir."""
+    client = ai_istemci_al()
+    if client is None:
+        return ("⚠️ AI yorumu için ANTHROPIC_API_KEY tanımlı değil. "
+                "Streamlit Cloud → App settings → Secrets bölümüne eklemen gerekiyor.")
+    try:
+        mesaj = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=600,
+            system=GURU_SISTEM_PROMPT,
+            messages=[{"role": "user", "content": veri_metni}],
+        )
+        return mesaj.content[0].text
+    except Exception as e:
+        return f"⚠️ AI yorumu alınamadı: {e}"
 
 
 # ─── OBV FONKSİYONLARI ──────────────────────────────────────────
@@ -347,6 +395,8 @@ if 'tarama_ham' not in st.session_state:
     st.session_state['tarama_ham'] = []
 if 'df_sonuc' not in st.session_state:
     st.session_state['df_sonuc'] = pd.DataFrame()
+if 'tab2_analiz' not in st.session_state:
+    st.session_state['tab2_analiz'] = None
 
 # ─── ANA SEKMELER ───────────────────────────────────────────────
 sekme1, sekme2, sekme3 = st.tabs(["📡 Piyasa Tarama", "🔍 Coin Ara", "⭐ Takip Listesi"])
@@ -553,6 +603,41 @@ with sekme1:
         col_b.metric("🔴 Negatif OBV Dengesi", len(negatif_obv),
                      delta=f"%{negatif_obv['OBV Dengesi %'].mean():.1f}" if not negatif_obv.empty else "0")
 
+        # ─── AI GURU PİYASA YORUMU ──────────────────────────────
+        st.markdown("---")
+        st.subheader("🧠 AI Guru — Piyasa Durum Tespiti")
+        st.caption("Yorum, yukarıdaki tabloda hesaplanan gerçek OBV ve fiyat verilerine dayanır; "
+                   "AI rastgele tahmin üretmez.")
+
+        if st.button("🔮 AI Piyasa Yorumu Oluştur", use_container_width=False):
+            with st.spinner("🧠 Guru veriyi inceliyor..."):
+                top_pozitif = pozitif.sort_values("OBV Dengesi %", ascending=False).head(5)
+                top_negatif = negatif.sort_values("OBV Dengesi %", ascending=True).head(5)
+
+                veri_metni = f"""Taranan toplam coin sayısı: {len(df_sonuc)}
+Balina birikim sinyali (POZİTİF) veren coin sayısı: {len(pozitif)}
+Dağıtım/riskli sinyal (NEGATİF) veren coin sayısı: {len(negatif)}
+Hacim destekli yükselişte olan coin sayısı: {len(hacim_destekli)}
+Tüm coinlerin ortalama OBV Dengesi: {df_sonuc['OBV Dengesi %'].mean():.2f}%
+Analiz periyodu: {analiz_periyodu} gün, hassasiyet ayarı: {obv_hassasiyet}
+
+En güçlü pozitif (balina toplama) sinyali veren coinler (Coin, Sembol, 24s Değişim%, OBV Dengesi%):
+{top_pozitif[['Coin Adı Metin','Sembol','24s Değişim %','OBV Dengesi %']].to_string(index=False) if not top_pozitif.empty else 'Yok'}
+
+En güçlü negatif (dağıtım) sinyali veren coinler (Coin, Sembol, 24s Değişim%, OBV Dengesi%):
+{top_negatif[['Coin Adı Metin','Sembol','24s Değişim %','OBV Dengesi %']].to_string(index=False) if not top_negatif.empty else 'Yok'}
+
+Bu verilere dayanarak genel piyasa durumunu (balina davranışı, risk seviyesi, dikkat edilmesi
+gereken noktalar) bir guru gibi değerlendir."""
+
+                yorum = ai_guru_yorumu_uret(veri_metni)
+
+            st.markdown(
+                f'<div style="background:#8dc64722; border-left:4px solid #8dc647; '
+                f'padding:16px 20px; border-radius:6px; line-height:1.6;">{yorum}</div>',
+                unsafe_allow_html=True
+            )
+
 
 # ════════════════════════════════════════════════════════════════
 # SEKME 2 — COİN ARA
@@ -585,67 +670,120 @@ with sekme2:
 
                 if not chart_data:
                     st.error("Veri çekilemedi.")
+                    st.session_state['tab2_analiz'] = None
                 else:
                     fiyatlar = [o[1] for o in chart_data.get('prices', [])]
                     hacimler = [o[1] for o in chart_data.get('total_volumes', [])]
-                    df_coin  = pd.DataFrame({"Fiyat": fiyatlar, "Hacim": hacimler})
-                    df_coin  = obv_hesapla(df_coin)
-                    sinyal   = uyumsuzluk_kontrol_et(df_coin, min(analiz_periyodu, len(df_coin)-1), obv_hassasiyet)
+                    df_coin     = pd.DataFrame({"Fiyat": fiyatlar, "Hacim": hacimler})
+                    df_coin     = obv_hesapla(df_coin)
+                    periyot     = min(analiz_periyodu, len(df_coin) - 1)
+                    sinyal      = uyumsuzluk_kontrol_et(df_coin, periyot, obv_hassasiyet)
+                    obv_dengesi = obv_hacim_dengesi(df_coin, periyot)
 
-                    if coin_bilgi:
-                        mevcut_fiyat = coin_bilgi.get('market_data', {}).get('current_price', {}).get('usd', 0)
-                        degisim_24h  = coin_bilgi.get('market_data', {}).get('price_change_percentage_24h', 0)
-                        market_cap   = coin_bilgi.get('market_data', {}).get('market_cap', {}).get('usd', 0)
-                        hacim_24h    = coin_bilgi.get('market_data', {}).get('total_volume', {}).get('usd', 0)
+                    # Sonucu session_state'e kaydediyoruz: aşağıdaki "Takibe Ekle" ve
+                    # "AI Yorumu Al" butonlarına tıklanınca sayfa yeniden çalışsa da
+                    # analiz ekranda kalır, kaybolmaz.
+                    st.session_state['tab2_analiz'] = {
+                        "secilen_id":  secilen_id,
+                        "secilen":     secilen,
+                        "df_coin":     df_coin,
+                        "sinyal":      sinyal,
+                        "coin_bilgi":  coin_bilgi,
+                        "obv_dengesi": obv_dengesi,
+                        "periyot":     periyot,
+                    }
 
-                        k1, k2, k3, k4 = st.columns(4)
-                        k1.metric("💰 Fiyat", f"${mevcut_fiyat:,.6f}", delta=f"%{degisim_24h:.2f}")
-                        k2.metric("📊 Market Cap", f"${market_cap:,.0f}")
-                        k3.metric("💧 24s Hacim", f"${hacim_24h:,.0f}")
-                        k4.metric("🔗 CoinGecko", "→", help=f"https://www.coingecko.com/en/coins/{secilen_id}")
-                        st.markdown(f"[🔗 CoinGecko'da Görüntüle](https://www.coingecko.com/en/coins/{secilen_id})")
+            # ─── KAYITLI ANALİZİ GÖSTER (seçili coin'e aitse) ────────────
+            analiz = st.session_state.get('tab2_analiz')
+            if analiz and analiz.get("secilen_id") == secilen_id:
+                df_coin     = analiz["df_coin"]
+                sinyal      = analiz["sinyal"]
+                coin_bilgi  = analiz["coin_bilgi"]
+                obv_dengesi = analiz["obv_dengesi"]
+                secilen_lbl = analiz["secilen"]
 
-                    # Sinyal banner
-                    sinyal_renk_map = {"POZİTİF": "#2196F3", "NEGATİF": "#F44336",
-                                       "YÜKSELİŞ": "#4CAF50", "DÜŞÜŞ": "#FF9800"}
-                    banner_renk = "#607D8B"
-                    for k, v in sinyal_renk_map.items():
-                        if k in sinyal:
-                            banner_renk = v
-                            break
+                mevcut_fiyat = degisim_24h = market_cap = hacim_24h = 0
+                if coin_bilgi:
+                    mevcut_fiyat = coin_bilgi.get('market_data', {}).get('current_price', {}).get('usd', 0)
+                    degisim_24h  = coin_bilgi.get('market_data', {}).get('price_change_percentage_24h', 0)
+                    market_cap   = coin_bilgi.get('market_data', {}).get('market_cap', {}).get('usd', 0)
+                    hacim_24h    = coin_bilgi.get('market_data', {}).get('total_volume', {}).get('usd', 0)
+
+                    k1, k2, k3, k4 = st.columns(4)
+                    k1.metric("💰 Fiyat", f"${mevcut_fiyat:,.6f}", delta=f"%{degisim_24h:.2f}")
+                    k2.metric("📊 Market Cap", f"${market_cap:,.0f}")
+                    k3.metric("💧 24s Hacim", f"${hacim_24h:,.0f}")
+                    k4.metric("🔗 CoinGecko", "→", help=f"https://www.coingecko.com/en/coins/{secilen_id}")
+                    st.markdown(f"[🔗 CoinGecko'da Görüntüle](https://www.coingecko.com/en/coins/{secilen_id})")
+
+                # Sinyal banner
+                sinyal_renk_map = {"POZİTİF": "#2196F3", "NEGATİF": "#F44336",
+                                   "YÜKSELİŞ": "#4CAF50", "DÜŞÜŞ": "#FF9800"}
+                banner_renk = "#607D8B"
+                for k, v in sinyal_renk_map.items():
+                    if k in sinyal:
+                        banner_renk = v
+                        break
+
+                st.markdown(
+                    f'<div style="background:{banner_renk}22; border-left:4px solid {banner_renk};'
+                    f'padding:12px 20px; border-radius:6px; font-size:20px; font-weight:bold;'
+                    f'color:{banner_renk}; margin:12px 0">{sinyal}</div>',
+                    unsafe_allow_html=True
+                )
+
+                st.plotly_chart(obv_grafigi_ciz(df_coin, secilen_lbl, sinyal), use_container_width=True)
+
+                # Takibe al butonu
+                st.markdown("---")
+                coin_adi_str = secilen_lbl.split(" (")[0]
+                coin_sym_str = secilen_lbl.split("(")[1].replace(")", "")
+                fiyat_str    = mevcut_fiyat
+
+                if st.button("⭐ Takip Listesine Ekle", use_container_width=False):
+                    basari, mesaj = takibe_ekle(secilen_id, coin_adi_str, coin_sym_str, fiyat_str, sinyal)
+                    if basari:
+                        st.success(f"✅ {coin_adi_str} takip listesine eklendi!")
+                        st.balloons()
+                    elif mesaj == "zaten_var":
+                        st.info("ℹ️ Bu coin zaten takip listende.")
+                    else:
+                        st.error(f"Hata: {mesaj}")
+
+                # İstatistikler
+                s1, s2, s3 = st.columns(3)
+                s1.metric("OBV Dengesi %", f"{obv_dengesi:.2f}%")
+                s2.metric("Son OBV", f"{df_coin['OBV'].iloc[-1]:,.0f}")
+                s3.metric("OBV Trendi",
+                          "📈 Yükseliyor" if df_coin['OBV'].iloc[-1] > df_coin['OBV_Trend'].iloc[-1] else "📉 Düşüyor")
+
+                # ─── AI GURU COIN YORUMU ──────────────────────────
+                st.markdown("---")
+                st.subheader("🧠 AI Guru — Bu Coin İçin Durum Tespiti")
+                st.caption("Yorum, yukarıda hesaplanan gerçek OBV ve fiyat verilerine dayanır; "
+                           "AI rastgele tahmin üretmez.")
+
+                if st.button("🔮 AI Yorumu Al", key=f"ai_coin_{secilen_id}"):
+                    with st.spinner("🧠 Guru veriyi inceliyor..."):
+                        veri_metni = f"""Coin: {coin_adi_str} ({coin_sym_str})
+Güncel fiyat: ${mevcut_fiyat:,.6f}
+24 saatlik fiyat değişimi: %{degisim_24h:.2f}
+Market Cap: ${market_cap:,.0f}
+24 saatlik hacim: ${hacim_24h:,.0f}
+Analiz periyodu: {analiz['periyot']} gün, hassasiyet ayarı: {obv_hassasiyet}
+Hesaplanan OBV sinyali: {sinyal}
+OBV Dengesi: {obv_dengesi:.2f}%
+Son OBV değeri: {df_coin['OBV'].iloc[-1]:,.0f}
+OBV trendi: {"yükseliyor" if df_coin['OBV'].iloc[-1] > df_coin['OBV_Trend'].iloc[-1] else "düşüyor"}
+
+Bu coin için OBV ve fiyat verilerine dayanarak bir durum tespiti yap."""
+                        yorum = ai_guru_yorumu_uret(veri_metni)
 
                     st.markdown(
-                        f'<div style="background:{banner_renk}22; border-left:4px solid {banner_renk};'
-                        f'padding:12px 20px; border-radius:6px; font-size:20px; font-weight:bold;'
-                        f'color:{banner_renk}; margin:12px 0">{sinyal}</div>',
+                        f'<div style="background:{banner_renk}15; border-left:4px solid {banner_renk}; '
+                        f'padding:16px 20px; border-radius:6px; line-height:1.6;">{yorum}</div>',
                         unsafe_allow_html=True
                     )
-
-                    st.plotly_chart(obv_grafigi_ciz(df_coin, secilen, sinyal), use_container_width=True)
-
-                    # Takibe al butonu
-                    st.markdown("---")
-                    coin_adi_str = secilen.split(" (")[0]
-                    coin_sym_str = secilen.split("(")[1].replace(")", "")
-                    fiyat_str    = coin_bilgi.get('market_data', {}).get('current_price', {}).get('usd', 0) if coin_bilgi else 0
-
-                    if st.button("⭐ Takip Listesine Ekle", use_container_width=False):
-                        basari, mesaj = takibe_ekle(secilen_id, coin_adi_str, coin_sym_str, fiyat_str, sinyal)
-                        if basari:
-                            st.success(f"✅ {coin_adi_str} takip listesine eklendi!")
-                            st.balloons()
-                        elif mesaj == "zaten_var":
-                            st.info("ℹ️ Bu coin zaten takip listende.")
-                        else:
-                            st.error(f"Hata: {mesaj}")
-
-                    # İstatistikler
-                    obv_dengesi = obv_hacim_dengesi(df_coin, min(analiz_periyodu, len(df_coin)-1))
-                    s1, s2, s3 = st.columns(3)
-                    s1.metric("OBV Dengesi %", f"{obv_dengesi:.2f}%")
-                    s2.metric("Son OBV", f"{df_coin['OBV'].iloc[-1]:,.0f}")
-                    s3.metric("OBV Trendi",
-                              "📈 Yükseliyor" if df_coin['OBV'].iloc[-1] > df_coin['OBV_Trend'].iloc[-1] else "📉 Düşüyor")
 
 
 # ════════════════════════════════════════════════════════════════
