@@ -166,7 +166,150 @@ def obv_hacim_dengesi(df, periyot=7):
     return (net_hacim / toplam_hacim * 100) if toplam_hacim > 0 else 0
 
 
-# ─── KATEGORİ & COIN FONKSİYONLARI ─────────────────────────────
+# ─── TEKNİK İNDİKATÖRLER ────────────────────────────────────────
+
+def rsi_hesapla(df, periyot=14):
+    """RSI (Relative Strength Index) hesaplar."""
+    if len(df) < periyot + 1:
+        return None
+    delta  = df['Fiyat'].diff()
+    kazan  = delta.clip(lower=0)
+    kayip  = -delta.clip(upper=0)
+    ort_k  = kazan.ewm(com=periyot - 1, min_periods=periyot).mean()
+    ort_ka = kayip.ewm(com=periyot - 1, min_periods=periyot).mean()
+    rs     = ort_k / (ort_ka + 1e-12)
+    rsi    = 100 - (100 / (1 + rs))
+    return round(float(rsi.iloc[-1]), 2)
+
+
+def macd_hesapla(df):
+    """MACD, sinyal çizgisi ve histogram hesaplar."""
+    if len(df) < 26:
+        return None, None, None
+    ema12    = df['Fiyat'].ewm(span=12, adjust=False).mean()
+    ema26    = df['Fiyat'].ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    sinyal   = macd_line.ewm(span=9, adjust=False).mean()
+    histogram = macd_line - sinyal
+    return (
+        round(float(macd_line.iloc[-1]), 6),
+        round(float(sinyal.iloc[-1]), 6),
+        round(float(histogram.iloc[-1]), 6),
+    )
+
+
+def bollinger_hesapla(df, periyot=20, std_katsayi=2):
+    """Bollinger Bands hesaplar ve fiyatın banda göre konumunu döndürür."""
+    if len(df) < periyot:
+        return None, None, None, None
+    ort      = df['Fiyat'].rolling(window=periyot).mean()
+    std      = df['Fiyat'].rolling(window=periyot).std()
+    ust_band = ort + std_katsayi * std
+    alt_band = ort - std_katsayi * std
+    son_fiyat = df['Fiyat'].iloc[-1]
+    bant_genisligi = float(ust_band.iloc[-1] - alt_band.iloc[-1])
+    # %B: fiyatın band içindeki konumu (0=alt band, 1=üst band)
+    yuzde_b = (son_fiyat - float(alt_band.iloc[-1])) / (bant_genisligi + 1e-12)
+    return (
+        round(float(ust_band.iloc[-1]), 6),
+        round(float(ort.iloc[-1]), 6),
+        round(float(alt_band.iloc[-1]), 6),
+        round(yuzde_b, 3),
+    )
+
+
+def hacim_analizi(df, periyot=7):
+    """Son hacmi ortalama hacimle karşılaştırır."""
+    if len(df) < periyot + 1:
+        return None, None
+    ort_hacim  = df['Hacim'].iloc[-periyot:].mean()
+    son_hacim  = df['Hacim'].iloc[-1]
+    hacim_oran = son_hacim / (ort_hacim + 1e-12)
+    return round(float(ort_hacim), 0), round(float(hacim_oran), 2)
+
+
+def tum_indiktorleri_hesapla(df, periyot=7):
+    """Tüm teknik indikatörleri tek seferde hesaplar ve dict döndürür."""
+    rsi = rsi_hesapla(df)
+    macd, macd_sinyal, macd_hist = macd_hesapla(df)
+    bb_ust, bb_orta, bb_alt, bb_yuzde_b = bollinger_hesapla(df)
+    ort_hacim, hacim_oran = hacim_analizi(df, periyot)
+
+    # RSI yorumu
+    rsi_yorum = "Veri yetersiz"
+    if rsi is not None:
+        if rsi >= 70:   rsi_yorum = "Aşırı Alım Bölgesi"
+        elif rsi >= 60: rsi_yorum = "Güçlü Bölge"
+        elif rsi >= 40: rsi_yorum = "Nötr Bölge"
+        elif rsi >= 30: rsi_yorum = "Zayıf Bölge"
+        else:           rsi_yorum = "Aşırı Satım Bölgesi"
+
+    # Bollinger yorumu
+    bb_yorum = "Veri yetersiz"
+    if bb_yuzde_b is not None:
+        if bb_yuzde_b > 1:    bb_yorum = "Üst Bandın Üzerinde (Aşırı alım)"
+        elif bb_yuzde_b > 0.8: bb_yorum = "Üst Banda Yakın"
+        elif bb_yuzde_b > 0.5: bb_yorum = "Orta-Üst Bölge"
+        elif bb_yuzde_b > 0.2: bb_yorum = "Orta-Alt Bölge"
+        elif bb_yuzde_b > 0:   bb_yorum = "Alt Banda Yakın"
+        else:                   bb_yorum = "Alt Bandın Altında (Aşırı satım)"
+
+    # MACD yorumu
+    macd_yorum = "Veri yetersiz"
+    if macd is not None and macd_hist is not None:
+        if macd > macd_sinyal and macd_hist > 0:
+            macd_yorum = "Yükseliş sinyali (MACD sinyal üzerinde, histogram pozitif)"
+        elif macd < macd_sinyal and macd_hist < 0:
+            macd_yorum = "Düşüş sinyali (MACD sinyal altında, histogram negatif)"
+        elif macd > 0:
+            macd_yorum = "Pozitif bölge ama momentum zayıflıyor"
+        else:
+            macd_yorum = "Negatif bölge ama momentum güçleniyor"
+
+    return {
+        "rsi": rsi, "rsi_yorum": rsi_yorum,
+        "macd": macd, "macd_sinyal": macd_sinyal,
+        "macd_histogram": macd_hist, "macd_yorum": macd_yorum,
+        "bb_ust": bb_ust, "bb_orta": bb_orta, "bb_alt": bb_alt,
+        "bb_yuzde_b": bb_yuzde_b, "bb_yorum": bb_yorum,
+        "ort_hacim": ort_hacim, "hacim_oran": hacim_oran,
+    }
+
+
+# ─── EKSTRA PİYASA VERİSİ ───────────────────────────────────────
+
+@st.cache_data(ttl=300)
+def fear_greed_getir():
+    """Alternative.me Fear & Greed Index — tamamen ücretsiz API."""
+    try:
+        res = requests.get("https://api.alternative.me/fng/?limit=1", timeout=8)
+        if res.status_code == 200:
+            veri = res.json()['data'][0]
+            return int(veri['value']), veri['value_classification']
+    except Exception:
+        pass
+    return None, None
+
+
+@st.cache_data(ttl=300)
+def btc_dominans_getir():
+    """BTC dominansı ve global market cap değişimi — CoinGecko."""
+    try:
+        res = requests.get(f"{BASE_URL}/global", headers=HEADERS, timeout=8)
+        if res.status_code == 200:
+            data = res.json().get('data', {})
+            btc_dom = data.get('market_cap_percentage', {}).get('btc', None)
+            mcap_degisim = data.get('market_cap_change_percentage_24h_usd', None)
+            return (
+                round(float(btc_dom), 2) if btc_dom else None,
+                round(float(mcap_degisim), 2) if mcap_degisim else None,
+            )
+    except Exception:
+        pass
+    return None, None
+
+
+
 @st.cache_data(ttl=3600)
 def kategorileri_getir():
     try:
@@ -684,17 +827,26 @@ with sekme2:
                     sinyal      = uyumsuzluk_kontrol_et(df_coin, periyot, obv_hassasiyet)
                     obv_dengesi = obv_hacim_dengesi(df_coin, periyot)
 
-                    # Sonucu session_state'e kaydediyoruz: aşağıdaki "Takibe Ekle" ve
-                    # "AI Yorumu Al" butonlarına tıklanınca sayfa yeniden çalışsa da
-                    # analiz ekranda kalır, kaybolmaz.
+                    # ── Yeni: Tüm teknik indikatörleri hesapla ──
+                    indiktorler = tum_indiktorleri_hesapla(df_coin, periyot)
+
+                    # ── Yeni: Piyasa bağlamı verisi ──
+                    fg_deger, fg_yorum = fear_greed_getir()
+                    btc_dom, mcap_degisim = btc_dominans_getir()
+
                     st.session_state['tab2_analiz'] = {
-                        "secilen_id":  secilen_id,
-                        "secilen":     secilen,
-                        "df_coin":     df_coin,
-                        "sinyal":      sinyal,
-                        "coin_bilgi":  coin_bilgi,
-                        "obv_dengesi": obv_dengesi,
-                        "periyot":     periyot,
+                        "secilen_id":    secilen_id,
+                        "secilen":       secilen,
+                        "df_coin":       df_coin,
+                        "sinyal":        sinyal,
+                        "coin_bilgi":    coin_bilgi,
+                        "obv_dengesi":   obv_dengesi,
+                        "periyot":       periyot,
+                        "indiktorler":   indiktorler,
+                        "fg_deger":      fg_deger,
+                        "fg_yorum":      fg_yorum,
+                        "btc_dom":       btc_dom,
+                        "mcap_degisim":  mcap_degisim,
                     }
 
             # ─── KAYITLI ANALİZİ GÖSTER (seçili coin'e aitse) ────────────
@@ -705,6 +857,11 @@ with sekme2:
                 coin_bilgi  = analiz["coin_bilgi"]
                 obv_dengesi = analiz["obv_dengesi"]
                 secilen_lbl = analiz["secilen"]
+                indiktorler = analiz.get("indiktorler", {})
+                fg_deger    = analiz.get("fg_deger")
+                fg_yorum    = analiz.get("fg_yorum")
+                btc_dom     = analiz.get("btc_dom")
+                mcap_degisim = analiz.get("mcap_degisim")
 
                 mevcut_fiyat = degisim_24h = market_cap = hacim_24h = 0
                 if coin_bilgi:
@@ -738,6 +895,38 @@ with sekme2:
 
                 st.plotly_chart(obv_grafigi_ciz(df_coin, secilen_lbl, sinyal), use_container_width=True)
 
+                # ─── TEKNİK İNDİKATÖR PANELİ ─────────────────────
+                st.markdown("---")
+                st.subheader("📐 Teknik İndikatörler")
+                i1, i2, i3, i4 = st.columns(4)
+
+                rsi_val = indiktorler.get('rsi')
+                rsi_renk = "#4CAF50" if rsi_val and rsi_val < 30 else "#F44336" if rsi_val and rsi_val > 70 else "#FAFAFA"
+                i1.metric("RSI (14)", f"{rsi_val}" if rsi_val else "—",
+                          delta=indiktorler.get('rsi_yorum', ''))
+
+                macd_val  = indiktorler.get('macd')
+                macd_hist = indiktorler.get('macd_histogram')
+                i2.metric("MACD", f"{macd_val:.6f}" if macd_val else "—",
+                          delta="▲ Pozitif" if macd_hist and macd_hist > 0 else "▼ Negatif" if macd_hist else "")
+
+                bb_yb = indiktorler.get('bb_yuzde_b')
+                i3.metric("Bollinger %B", f"{bb_yb:.2f}" if bb_yb is not None else "—",
+                          delta=indiktorler.get('bb_yorum', ''))
+
+                hr = indiktorler.get('hacim_oran')
+                i4.metric("Hacim/Ort.", f"{hr:.2f}x" if hr else "—",
+                          delta="🔥 Yüksek hacim" if hr and hr > 1.5 else "📉 Düşük hacim" if hr and hr < 0.7 else "Normal")
+
+                # Piyasa bağlamı
+                if fg_deger or btc_dom:
+                    p1, p2 = st.columns(2)
+                    if fg_deger:
+                        p1.metric("😨 Fear & Greed", f"{fg_deger} — {fg_yorum}")
+                    if btc_dom:
+                        p2.metric("₿ BTC Dominansı", f"%{btc_dom}",
+                                  delta=f"Global MC 24s: %{mcap_degisim:.2f}" if mcap_degisim else "")
+
                 # Takibe al butonu
                 st.markdown("---")
                 coin_adi_str = secilen_lbl.split(" (")[0]
@@ -754,7 +943,7 @@ with sekme2:
                     else:
                         st.error(f"Hata: {mesaj}")
 
-                # İstatistikler
+                # OBV İstatistikleri
                 s1, s2, s3 = st.columns(3)
                 s1.metric("OBV Dengesi %", f"{obv_dengesi:.2f}%")
                 s2.metric("Son OBV", f"{df_coin['OBV'].iloc[-1]:,.0f}")
@@ -764,28 +953,58 @@ with sekme2:
                 # ─── AI GURU COIN YORUMU ──────────────────────────
                 st.markdown("---")
                 st.subheader("🧠 AI Guru — Bu Coin İçin Durum Tespiti")
-                st.caption("Yorum, yukarıda hesaplanan gerçek OBV ve fiyat verilerine dayanır; "
-                           "AI rastgele tahmin üretmez.")
+                st.caption("Yorum; OBV, RSI, MACD, Bollinger, hacim ve piyasa bağlamı verilerine dayanır.")
 
                 if st.button("🔮 AI Yorumu Al", key=f"ai_coin_{secilen_id}"):
-                    with st.spinner("🧠 Guru veriyi inceliyor..."):
-                        veri_metni = f"""Coin: {coin_adi_str} ({coin_sym_str})
+                    with st.spinner("🧠 Guru tüm indikatörleri işliyor..."):
+
+                        rsi         = indiktorler.get('rsi', 'N/A')
+                        rsi_y       = indiktorler.get('rsi_yorum', 'N/A')
+                        macd_v      = indiktorler.get('macd', 'N/A')
+                        macd_s      = indiktorler.get('macd_sinyal', 'N/A')
+                        macd_h      = indiktorler.get('macd_histogram', 'N/A')
+                        macd_y      = indiktorler.get('macd_yorum', 'N/A')
+                        bb_u        = indiktorler.get('bb_ust', 'N/A')
+                        bb_o        = indiktorler.get('bb_orta', 'N/A')
+                        bb_a        = indiktorler.get('bb_alt', 'N/A')
+                        bb_y        = indiktorler.get('bb_yuzde_b', 'N/A')
+                        bb_yo       = indiktorler.get('bb_yorum', 'N/A')
+                        h_oran      = indiktorler.get('hacim_oran', 'N/A')
+                        obv_trend_y = "yükseliyor" if df_coin['OBV'].iloc[-1] > df_coin['OBV_Trend'].iloc[-1] else "düşüyor"
+
+                        veri_metni = f"""=== KOİN BİLGİSİ ===
+Coin: {coin_adi_str} ({coin_sym_str})
 Güncel fiyat: ${mevcut_fiyat:,.6f}
 24 saatlik fiyat değişimi: %{degisim_24h:.2f}
 Market Cap: ${market_cap:,.0f}
-24 saatlik hacim: ${hacim_24h:,.0f}
-Analiz periyodu: {analiz['periyot']} gün, hassasiyet ayarı: {obv_hassasiyet}
-Hesaplanan OBV sinyali: {sinyal}
-OBV Dengesi: {obv_dengesi:.2f}%
-Son OBV değeri: {df_coin['OBV'].iloc[-1]:,.0f}
-OBV trendi: {"yükseliyor" if df_coin['OBV'].iloc[-1] > df_coin['OBV_Trend'].iloc[-1] else "düşüyor"}
+24 saatlik işlem hacmi: ${hacim_24h:,.0f}
 
-Bu coin için OBV ve fiyat verilerine dayanarak bir durum tespiti yap."""
+=== OBV ANALİZİ ===
+OBV Sinyali: {sinyal}
+OBV Dengesi ({analiz['periyot']} gün): %{obv_dengesi:.2f}
+OBV Trendi: {obv_trend_y}
+
+=== TEKNİK İNDİKATÖRLER ===
+RSI (14): {rsi} — {rsi_y}
+MACD: {macd_v} | Sinyal: {macd_s} | Histogram: {macd_h}
+MACD Durumu: {macd_y}
+Bollinger Üst Band: {bb_u} | Orta: {bb_o} | Alt: {bb_a}
+Bollinger %B: {bb_y} — {bb_yo}
+Son Hacim / Ortalama Hacim: {h_oran}x
+
+=== PİYASA BAĞLAMI ===
+Fear & Greed Index: {fg_deger if fg_deger else 'N/A'} ({fg_yorum if fg_yorum else 'N/A'})
+BTC Dominansı: %{btc_dom if btc_dom else 'N/A'}
+Global Market Cap 24s Değişim: %{mcap_degisim if mcap_degisim else 'N/A'}
+
+Tüm bu verileri birlikte yorumlayarak kapsamlı bir teknik analiz durum tespiti yap.
+OBV, RSI, MACD ve Bollinger sinyallerinin birbirini teyit edip etmediğini özellikle belirt."""
+
                         yorum = ai_guru_yorumu_uret(veri_metni)
 
                     st.markdown(
                         f'<div style="background:{banner_renk}15; border-left:4px solid {banner_renk}; '
-                        f'padding:16px 20px; border-radius:6px; line-height:1.6;">{yorum}</div>',
+                        f'padding:16px 20px; border-radius:6px; line-height:1.7;">{yorum}</div>',
                         unsafe_allow_html=True
                     )
 
