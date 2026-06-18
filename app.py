@@ -6,7 +6,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
-import anthropic
+import google.generativeai as genai
 
 # ─── SAYFA AYARLARI ─────────────────────────────────────────────
 st.set_page_config(page_title="OBV Pro Scanner", layout="wide", page_icon="🐋")
@@ -62,26 +62,26 @@ KURALLARIN:
 
 @st.cache_resource
 def ai_istemci_al():
-    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    api_key = st.secrets.get("GEMINI_API_KEY", "")
     if not api_key:
         return None
-    return anthropic.Anthropic(api_key=api_key)
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel(
+        model_name="gemini-2.0-flash",
+        system_instruction=GURU_SISTEM_PROMPT,
+    )
 
 
 def ai_guru_yorumu_uret(veri_metni):
     """Uygulamanın hesapladığı gerçek verileri AI'a gönderip guru yorumu üretir."""
-    client = ai_istemci_al()
-    if client is None:
-        return ("⚠️ AI yorumu için ANTHROPIC_API_KEY tanımlı değil. "
-                "Streamlit Cloud → App settings → Secrets bölümüne eklemen gerekiyor.")
+    model = ai_istemci_al()
+    if model is None:
+        return ("⚠️ AI yorumu için GEMINI_API_KEY tanımlı değil. "
+                "Streamlit Cloud → App settings → Secrets bölümüne eklemen gerekiyor. "
+                "Ücretsiz key almak için: aistudio.google.com/app/apikey")
     try:
-        mesaj = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=600,
-            system=GURU_SISTEM_PROMPT,
-            messages=[{"role": "user", "content": veri_metni}],
-        )
-        return mesaj.content[0].text
+        yanit = model.generate_content(veri_metni)
+        return yanit.text
     except Exception as e:
         return f"⚠️ AI yorumu alınamadı: {e}"
 
