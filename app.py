@@ -6,7 +6,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
-import google.generativeai as genai
+from groq import Groq
 
 # ─── SAYFA AYARLARI ─────────────────────────────────────────────
 st.set_page_config(page_title="OBV Pro Scanner", layout="wide", page_icon="🐋")
@@ -62,26 +62,30 @@ KURALLARIN:
 
 @st.cache_resource
 def ai_istemci_al():
-    api_key = st.secrets.get("GEMINI_API_KEY", "")
+    api_key = st.secrets.get("GROQ_API_KEY", "")
     if not api_key:
         return None
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel(
-        model_name="gemini-2.0-flash",
-        system_instruction=GURU_SISTEM_PROMPT,
-    )
+    return Groq(api_key=api_key)
 
 
 def ai_guru_yorumu_uret(veri_metni):
     """Uygulamanın hesapladığı gerçek verileri AI'a gönderip guru yorumu üretir."""
-    model = ai_istemci_al()
-    if model is None:
-        return ("⚠️ AI yorumu için GEMINI_API_KEY tanımlı değil. "
+    client = ai_istemci_al()
+    if client is None:
+        return ("⚠️ AI yorumu için GROQ_API_KEY tanımlı değil. "
                 "Streamlit Cloud → App settings → Secrets bölümüne eklemen gerekiyor. "
-                "Ücretsiz key almak için: aistudio.google.com/app/apikey")
+                "Ücretsiz key almak için: console.groq.com")
     try:
-        yanit = model.generate_content(veri_metni)
-        return yanit.text
+        yanit = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": GURU_SISTEM_PROMPT},
+                {"role": "user",   "content": veri_metni},
+            ],
+            max_tokens=600,
+            temperature=0.4,
+        )
+        return yanit.choices[0].message.content
     except Exception as e:
         return f"⚠️ AI yorumu alınamadı: {e}"
 
