@@ -1,47 +1,69 @@
-import pandas as pd
+"""
+data.py — Veri Katmanı
+───────────────────────
+CoinGecko API, Supabase (takip listesi) ve ücretsiz piyasa bağlamı
+kaynaklarıyla (Fear & Greed Index) ilgili her şey burada toplanır.
+Bu modül "veri getir / veri gönder" sorumluluğunu taşır; hiçbir UI
+mantığı içermez.
+"""
+
 import requests
+import pandas as pd
 import streamlit as st
 from datetime import datetime
 
-API_KEY = st.secrets["CG_API_KEY"]
-BASE_URL = "https://api.coingecko.com/api/v3"
-HEADERS = {"accept": "application/json", "x-cg-demo-api-key": API_KEY}
+CG_BASE = "https://api.coingecko.com/api/v3"
 
-SB_URL = st.secrets["SUPABASE_URL"]
-SB_KEY = st.secrets["SUPABASE_KEY"]
-SB_HEADERS = {
-    "apikey": SB_KEY,
-    "Authorization": f"Bearer {SB_KEY}",
-    "Content-Type": "application/json",
-    "Prefer": "return=representation",
-}
+
+def _cg_headers():
+    return {
+        "accept": "application/json",
+        "x-cg-demo-api-key": st.secrets["CG_API_KEY"],
+    }
+
+
+def _sb_headers():
+    key = st.secrets["SUPABASE_KEY"]
+    return {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+
+
+# ─── COİNGECKO — PİYASA & COIN VERİSİ ───────────────────────────
 
 @st.cache_data(ttl=3600)
-def get_categories():
+def kategorileri_getir() -> pd.DataFrame:
     try:
-        r = requests.get(f"{BASE_URL}/coins/categories/list", headers=HEADERS, timeout=10)
+        r = requests.get(f"{CG_BASE}/coins/categories/list", headers=_cg_headers(), timeout=10)
         if r.status_code == 200:
             return pd.DataFrame(r.json())
     except Exception:
         pass
     return pd.DataFrame()
 
+
 @st.cache_data(ttl=300)
-def search_coin(query):
+def coin_ara(sorgu: str) -> list:
     try:
-        r = requests.get(f"{BASE_URL}/search", headers=HEADERS, params={"query": query}, timeout=10)
+        r = requests.get(f"{CG_BASE}/search", headers=_cg_headers(),
+                          params={"query": sorgu}, timeout=10)
         if r.status_code == 200:
             return r.json().get("coins", [])
     except Exception:
         pass
     return []
 
+
 @st.cache_data(ttl=300)
-def get_coin_chart(coin_id, days=35):
+def coin_detay_getir(coin_id: str, days: int = 35):
+    """Günlük fiyat + hacim geçmişi (market_chart endpoint)."""
     try:
         r = requests.get(
-            f"{BASE_URL}/coins/{coin_id}/market_chart",
-            headers=HEADERS,
+            f"{CG_BASE}/coins/{coin_id}/market_chart",
+            headers=_cg_headers(),
             params={"vs_currency": "usd", "days": days, "interval": "daily"},
             timeout=10,
         )
@@ -51,18 +73,16 @@ def get_coin_chart(coin_id, days=35):
         pass
     return None
 
+
 @st.cache_data(ttl=300)
-def get_coin_info(coin_id):
+def coin_bilgi_getir(coin_id: str):
+    """Tek coin için anlık fiyat, market cap, hacim vb. detaylı bilgi."""
     try:
         r = requests.get(
-            f"{BASE_URL}/coins/{coin_id}",
-            headers=HEADERS,
-            params={
-                "localization": "false",
-                "tickers": "false",
-                "community_data": "false",
-                "developer_data": "false",
-            },
+            f"{CG_BASE}/coins/{coin_id}",
+            headers=_cg_headers(),
+            params={"localization": "false", "tickers": "false",
+                    "community_data": "false", "developer_data": "false"},
             timeout=10,
         )
         if r.status_code == 200:
@@ -71,45 +91,128 @@ def get_coin_info(coin_id):
         pass
     return None
 
-def get_current_price(coin_id):
+
+def guncel_fiyat_getir(coin_id: str):
+    """Tek coin için anlık fiyat ve 24s değişim — cache'siz (Takip Listesi sekmesi için)."""
     try:
         r = requests.get(
-            f"{BASE_URL}/simple/price",
-            headers=HEADERS,
+            f"{CG_BASE}/simple/price",
+            headers=_cg_headers(),
             params={"ids": coin_id, "vs_currencies": "usd", "include_24hr_change": "true"},
             timeout=10,
         )
         if r.status_code == 200:
-            data = r.json().get(coin_id, {})
-            return data.get("usd", 0), data.get("usd_24h_change", 0)
+            d = r.json().get(coin_id, {})
+            return d.get("usd", 0), d.get("usd_24h_change", 0)
     except Exception:
         pass
     return 0, 0
 
-def get_watchlist():
+
+def piyasa_taramasi_istegi(siralama: str, sayfa_basi: int, kategori_id: str = ""):
+    """Piyasa tarama listesini çeker (coins/markets). Hata durumunda
+    requests.Response nesnesini olduğu gibi döndürür ki çağıran taraf
+    status_code'a göre (429 / diğer) karar verebilsin."""
+    params = {
+        "vs_currency": "usd",
+        "order":       siralama,
+        "per_page":    sayfa_basi,
+        "page":        1,
+        "sparkline":   "false",
+    }
+    if kategori_id:
+        params["category"] = kategori_id
+    return requests.get(f"{CG_BASE}/coins/markets", headers=_cg_headers(), params=params, timeout=15)
+
+
+def coin_grafik_istegi(coin_id: str, days: int = 35, retry_on_429: bool = True):
+    """Tarama döngüsü için cache'siz market_chart isteği (429'da bir kez tekrar dener)."""
+    import time
+    r = requests.get(
+        f"{CG_BASE}/coins/{coin_id}/market_chart",
+        headers=_cg_headers(),
+        params={"vs_currency": "usd", "days": days, "interval": "daily"},
+        timeout=10,
+    )
+    if r.status_code == 429 and retry_on_429:
+        time.sleep(8)
+        r = requests.get(
+            f"{CG_BASE}/coins/{coin_id}/market_chart",
+            headers=_cg_headers(),
+            params={"vs_currency": "usd", "days": days, "interval": "daily"},
+            timeout=10,
+        )
+    return r
+
+
+# ─── PİYASA BAĞLAMI (ücretsiz, ekstra maliyetsiz) ──────────────
+
+@st.cache_data(ttl=300)
+def fear_greed_getir():
+    """Alternative.me Fear & Greed Index — tamamen ücretsiz, limitsiz."""
     try:
-        r = requests.get(f"{SB_URL}/rest/v1/takip_listesi?select=*", headers=SB_HEADERS, timeout=10)
+        r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=8)
+        if r.status_code == 200:
+            v = r.json()['data'][0]
+            return int(v['value']), v['value_classification']
+    except Exception:
+        pass
+    return None, None
+
+
+@st.cache_data(ttl=300)
+def btc_dominans_getir():
+    """BTC dominansı ve global market cap 24s değişimi — CoinGecko /global."""
+    try:
+        r = requests.get(f"{CG_BASE}/global", headers=_cg_headers(), timeout=8)
+        if r.status_code == 200:
+            d = r.json().get('data', {})
+            btc = d.get('market_cap_percentage', {}).get('btc')
+            chg = d.get('market_cap_change_percentage_24h_usd')
+            return (
+                round(float(btc), 2) if btc else None,
+                round(float(chg), 2) if chg else None,
+            )
+    except Exception:
+        pass
+    return None, None
+
+
+# ─── SUPABASE — TAKİP LİSTESİ ────────────────────────────────────
+
+def takip_listesi_getir() -> list:
+    try:
+        r = requests.get(
+            f"{st.secrets['SUPABASE_URL']}/rest/v1/takip_listesi?select=*",
+            headers=_sb_headers(), timeout=10,
+        )
         if r.status_code == 200:
             return r.json()
     except Exception:
         pass
     return []
 
-def add_to_watchlist(coin_id, coin_adi, sembol, fiyat, sinyal):
+
+def takibe_ekle(coin_id, coin_adi, sembol, fiyat, sinyal):
+    sb_url = st.secrets['SUPABASE_URL']
     try:
-        check = requests.get(f"{SB_URL}/rest/v1/takip_listesi?coin_id=eq.{coin_id}", headers=SB_HEADERS, timeout=10)
-        if check.status_code == 200 and check.json():
+        kontrol = requests.get(
+            f"{sb_url}/rest/v1/takip_listesi?coin_id=eq.{coin_id}",
+            headers=_sb_headers(), timeout=10,
+        )
+        if kontrol.status_code == 200 and len(kontrol.json()) > 0:
             return False, "zaten_var"
+
         r = requests.post(
-            f"{SB_URL}/rest/v1/takip_listesi",
-            headers=SB_HEADERS,
+            f"{sb_url}/rest/v1/takip_listesi",
+            headers=_sb_headers(),
             json={
-                "coin_id": coin_id,
-                "coin_adi": coin_adi,
-                "sembol": sembol,
-                "baslangic_fiyat": fiyat,
+                "coin_id":          coin_id,
+                "coin_adi":         coin_adi,
+                "sembol":           sembol,
+                "baslangic_fiyat":  fiyat,
                 "baslangic_sinyal": sinyal,
-                "eklenme_tarihi": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "eklenme_tarihi":   datetime.now().strftime("%Y-%m-%d %H:%M"),
             },
             timeout=10,
         )
@@ -119,33 +222,13 @@ def add_to_watchlist(coin_id, coin_adi, sembol, fiyat, sinyal):
     except Exception as e:
         return False, str(e)
 
-def remove_from_watchlist(coin_id):
+
+def takipten_cikar(coin_id: str) -> bool:
     try:
-        r = requests.delete(f"{SB_URL}/rest/v1/takip_listesi?coin_id=eq.{coin_id}", headers=SB_HEADERS, timeout=10)
+        r = requests.delete(
+            f"{st.secrets['SUPABASE_URL']}/rest/v1/takip_listesi?coin_id=eq.{coin_id}",
+            headers=_sb_headers(), timeout=10,
+        )
         return r.status_code in [200, 204]
     except Exception:
         return False
-
-@st.cache_data(ttl=300)
-def get_fear_greed():
-    try:
-        r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=8)
-        if r.status_code == 200:
-            d = r.json()["data"][0]
-            return int(d["value"]), d["value_classification"]
-    except Exception:
-        pass
-    return None, None
-
-@st.cache_data(ttl=300)
-def get_btc_dominance():
-    try:
-        r = requests.get(f"{BASE_URL}/global", headers=HEADERS, timeout=8)
-        if r.status_code == 200:
-            data = r.json().get("data", {})
-            btc = data.get("market_cap_percentage", {}).get("btc")
-            change = data.get("market_cap_change_percentage_24h_usd")
-            return (round(float(btc), 2) if btc else None, round(float(change), 2) if change else None)
-    except Exception:
-        pass
-    return None, None
