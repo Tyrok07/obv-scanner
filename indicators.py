@@ -7,9 +7,11 @@ başka bir projede veya Jupyter'da da doğrudan kullanılabilir, test yazmak
 da kolaydır.
 
 Beklenen DataFrame şeması: 'Fiyat' ve 'Hacim' sütunları (günlük, kronolojik
-sırada, index sıfırdan başlıyor).
+sırada, index sıfırdan başlıyor). TradingView portu bölümündeki fonksiyonlar
+ayrıca 'High' ve 'Low' sütunlarını da bekler (bkz. ohlc_hizala).
 """
 
+import numpy as np
 import pandas as pd
 
 
@@ -213,4 +215,245 @@ def tum_indiktorleri_hesapla(df: pd.DataFrame, periyot: int = 7) -> dict:
         "bb_yorum":       bollinger_yorumla(bb_yuzde_b),
         "ort_hacim":      ort_hacim,
         "hacim_oran":     hacim_oran,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TRADINGVIEW "OBV MACD INDICATOR" PORTU (Pine Script v4 → pandas)
+# ═══════════════════════════════════════════════════════════════════
+# Orijinal göstergedeki üç aşama birebir taşındı:
+#   1) obv_sentetik_fiyat()   → Pine'daki 'out' serisi (OBV sapmasını High/Low
+#                                volatilitesiyle ölçekleyip fiyat gibi kullanan seri)
+#   2) tv_macd_hesapla()      → Pine'daki 'macd = ma - slow_ma' (ma = DEMA/TEMA/EMA
+#                                bu sentetik seri üzerinde, slow_ma = EMA(close,26))
+#   3) tv_linreg_projeksiyon()+tv_tchannel() → Pine'daki calcSlope()/tt1 ve
+#                                T-Channel adaptif baseline + yön (oc) mantığı
+#
+# NOT: Bu fonksiyonlar 'High' ve 'Low' sütunu ister — CoinGecko'nun /market_chart
+# uç noktası bunları vermez, /ohlc uç noktasından ayrıca çekilip ohlc_hizala()
+# ile günlük df'e hizalanmalıdır (bkz. data.coin_ohlc_istegi).
+
+def _dema(series: pd.Series, length: int) -> pd.Series:
+    ema1 = series.ewm(span=length, adjust=False).mean()
+    ema2 = ema1.ewm(span=length, adjust=False).mean()
+    return 2 * ema1 - ema2
+
+
+def _tema(series: pd.Series, length: int) -> pd.Series:
+    ema1 = series.ewm(span=length, adjust=False).mean()
+    ema2 = ema1.ewm(span=length, adjust=False).mean()
+    ema3 = ema2.ewm(span=length, adjust=False).mean()
+    return 3 * (ema1 - ema2) + ema3
+
+
+def _tv_myma(series: pd.Series, length: int, tip: str = "DEMA") -> pd.Series:
+    """Pine'daki myma() seçicisinin en sık kullanılan 3 türü (EMA/DEMA/TEMA).
+    Orijinal script'te 14 tip var; gösterge varsayılanı DEMA olduğu için
+    diğerleri (ZLEMA, HMA türevleri vb.) burada taşınmadı, gerekirse eklenebilir."""
+    tip = (tip or "DEMA").upper()
+    if tip == "EMA":
+        return series.ewm(span=length, adjust=False).mean()
+    if tip == "TEMA":
+        return _tema(series, length)
+    return _dema(series, length)
+
+
+def ohlc_hizala(df: pd.DataFrame, ohlc_liste: list, ts_kolon: str = "ts") -> pd.DataFrame:
+    """CoinGecko /ohlc uç noktasından gelen [ts_ms, open, high, low, close]
+    listesini, zaten bir 'ts' (datetime) sütunu içeren günlük df'e en yakın
+    zaman damgasına göre hizalayıp 'High'/'Low' sütunlarını ekler.
+
+    df: 'ts' (datetime64), 'Fiyat', 'Hacim' sütunlarını içermeli.
+    ohlc_liste: data.coin_ohlc_istegi(...).json() çıktısı.
+
+    CoinGecko /ohlc, istenen gün sayısına göre farklı mum genişliği döndürür
+    (1-2 gün: 30dk, 3-30 gün: 4 saat, 31+ gün: 4 gün) — bu yüzden birebir
+    zaman eşleşmesi yerine en yakın mum kullanılır (direction='nearest')."""
+    df = df.copy()
+    if not ohlc_liste or ts_kolon not in df.columns:
+        df['High'] = df['Fiyat']
+        df['Low']  = df['Fiyat']
+        return df
+
+    df_ohlc = pd.DataFrame(ohlc_liste, columns=['ts_ms', 'Open', 'High', 'Low', 'Close'])
+    df_ohlc['ts'] = pd.to_datetime(df_ohlc['ts_ms'], unit='ms').astype('datetime64[ns]')
+    df_ohlc = df_ohlc[['ts', 'High', 'Low']].sort_values('ts').reset_index(drop=True)
+
+    df = df.sort_values(ts_kolon).reset_index(drop=True)
+    df[ts_kolon] = pd.to_datetime(df[ts_kolon]).astype('datetime64[ns]')
+    hizali = pd.merge_asof(df, df_ohlc, left_on=ts_kolon, right_on='ts', direction='nearest')
+    hizali = hizali.drop(columns=['ts']) if 'ts' in hizali.columns and ts_kolon != 'ts' else hizali
+    hizali['High'] = hizali['High'].fillna(hizali['Fiyat'])
+    hizali['Low']  = hizali['Low'].fillna(hizali['Fiyat'])
+    return hizali
+
+
+def obv_cum_seri(df: pd.DataFrame) -> pd.Series:
+    """Pine: v = cum(sign(change(close)) * volume).
+    Not: Bu, obv_hesapla()'daki 'OBV' sütunuyla matematiksel olarak eşdeğerdir;
+    TradingView portu kendi içinde bağımsız çalışabilsin diye ayrıca tanımlandı."""
+    fark   = df['Fiyat'].diff()
+    isaret = np.sign(fark).fillna(0)
+    return (isaret * df['Hacim']).cumsum()
+
+
+def obv_sentetik_fiyat(df: pd.DataFrame, window_len: int = 28, v_len: int = 14) -> pd.Series:
+    """Pine: v, smooth, v_spread, price_spread, shadow, out satırlarının karşılığı.
+    OBV'nin kendi 14 periyotluk ortalamasından sapmasını, fiyatın 28 periyotluk
+    High-Low volatilitesiyle ölçeklendirip High veya Low'a ekleyerek sentetik
+    bir fiyat serisi üretir ('out')."""
+    for kolon in ('High', 'Low'):
+        if kolon not in df.columns:
+            raise ValueError(
+                f"obv_sentetik_fiyat için '{kolon}' sütunu gerekli — önce ohlc_hizala() ile ekleyin."
+            )
+    v            = obv_cum_seri(df)
+    smooth       = v.rolling(v_len, min_periods=1).mean()
+    v_spread     = (v - smooth).rolling(window_len, min_periods=2).std(ddof=0)
+    price_spread = (df['High'] - df['Low']).rolling(window_len, min_periods=2).std(ddof=0)
+    shadow       = (v - smooth) / v_spread.replace(0, np.nan) * price_spread
+    out          = np.where(shadow > 0, df['High'] + shadow, df['Low'] + shadow)
+    return pd.Series(out, index=df.index)
+
+
+def tv_macd_hesapla(df: pd.DataFrame, dema_len: int = 9, slow_len: int = 26,
+                     window_len: int = 28, v_len: int = 14, obv_ema_len: int = 1,
+                     ma_tipi: str = "DEMA") -> pd.Series:
+    """Pine: ma = myma(obvema, len) ; slow_ma = ema(close, 26) ; macd = ma - slow_ma.
+    obv_ema_len=1 iken Pine'daki ema(out,1) satırı matematiksel olarak out'un
+    kendisine eşittir (span=1 EMA fark yaratmaz), o yüzden varsayılan geçişte
+    doğrudan 'out' kullanılır."""
+    out    = obv_sentetik_fiyat(df, window_len, v_len)
+    obvema = out if obv_ema_len <= 1 else out.ewm(span=obv_ema_len, adjust=False).mean()
+    ma      = _tv_myma(obvema, dema_len, ma_tipi)
+    slow_ma = df['Fiyat'].ewm(span=slow_len, adjust=False).mean()
+    return ma - slow_ma
+
+
+def tv_linreg_projeksiyon(seri: pd.Series, uzunluk: int = 2, offset: int = 0) -> pd.Series:
+    """Pine: calcSlope(src5, len5) → tt1 = intercept + slope*(len5-offset).
+    Son `uzunluk` bar üzerinde ağırlıklı lineer regresyon uygulayıp projekte
+    edilmiş değeri döndürür (varsayılan uzunluk=2, offset=0 ile tt1 == seri,
+    bu Pine kodundaki algebrik bir özdeşliktir — script'i len5>2 ile
+    kullananlar için genel biçimde bırakıldı)."""
+    vals = seri.values.astype(float)
+    n = len(vals)
+    tt1 = np.full(n, np.nan)
+    for idx in range(n):
+        if idx - (uzunluk - 1) < 0:
+            continue
+        pencere = vals[idx - uzunluk + 1: idx + 1]
+        if np.isnan(pencere).any():
+            continue
+        sumX = sumY = sumXSqr = sumXY = 0.0
+        for i in range(1, uzunluk + 1):
+            bars_ago = uzunluk - i
+            val = vals[idx - bars_ago]
+            per = i + 1.0
+            sumX    += per
+            sumY    += val
+            sumXSqr += per * per
+            sumXY   += val * per
+        denom = uzunluk * sumXSqr - sumX * sumX
+        if denom == 0:
+            continue
+        slope     = (uzunluk * sumXY - sumX * sumY) / denom
+        average   = sumY / uzunluk
+        intercept = average - slope * sumX / uzunluk + slope
+        tt1[idx]  = intercept + slope * (uzunluk - offset)
+    return pd.Series(tt1, index=seri.index)
+
+
+def tv_tchannel(tt1: pd.Series, p: float = 1.0):
+    """Pine: b5/dev5/oc satırlarının karşılığı (T-Channel).
+    b5: adaptif baseline — sadece kümülatif ortalama mutlak sapma eşiğini (a15)
+        aşan hareketlerde yeniden konumlanır.
+    oc: yön — 1 = yükseliş (mavi), -1 = düşüş (kırmızı).
+
+    NOT: Pine'daki n5 = cum(1)-1, TradingView grafiğindeki TOPLAM bar sayısına
+    dayalı global bir sayaçtır (chart'ın en başından itibaren). Sınırlı pencereli
+    (35-90 günlük) bir taramada bunun tam karşılığı yoktur; burada df'in kendi
+    bar index'i (idx) kullanılır — bu, script'in tek bir grafik üzerinde baştan
+    çalıştırılmasıyla en tutarlı yorumdur."""
+    vals = tt1.values.astype(float)
+    n = len(vals)
+    b5  = np.full(n, np.nan)
+    oc  = np.zeros(n)
+    dev5 = np.full(n, np.nan)
+    cum_abs_dev = 0.0
+
+    for idx in range(n):
+        if np.isnan(vals[idx]):
+            continue
+        onceki_gecersiz = np.isnan(b5[idx - 1]) if idx > 0 else True
+        if onceki_gecersiz:
+            b5[idx]   = vals[idx]
+            oc[idx]   = oc[idx - 1] if idx > 0 else 0
+            dev5[idx] = dev5[idx - 1] if (idx > 0 and not np.isnan(dev5[idx - 1])) else 0.0
+            continue
+
+        prev_b5 = b5[idx - 1]
+        n5 = idx
+        cum_abs_dev += abs(vals[idx] - prev_b5)
+        a15 = (cum_abs_dev / n5 * p) if n5 > 0 else 0.0
+
+        if vals[idx] > prev_b5 + a15:
+            b5[idx] = vals[idx]
+        elif vals[idx] < prev_b5 - a15:
+            b5[idx] = vals[idx]
+        else:
+            b5[idx] = prev_b5
+
+        if b5[idx] != prev_b5:
+            dev5[idx] = a15
+            oc[idx]   = 1 if b5[idx] > prev_b5 else -1
+        else:
+            dev5[idx] = dev5[idx - 1] if not np.isnan(dev5[idx - 1]) else a15
+            oc[idx]   = oc[idx - 1]
+
+    return pd.Series(b5, index=tt1.index), pd.Series(oc, index=tt1.index)
+
+
+def tv_tchannel_sinyali_uret(oc: pd.Series) -> str:
+    """Son bardaki T-Channel yönünü ve varsa taze bir dönüşü (flip) okunabilir
+    Türkçe metne çevirir — uyumsuzluk_kontrol_et() ile aynı formatta, tarayıcı
+    tablosunda doğrudan kullanılabilir."""
+    if oc.empty or len(oc) < 2 or pd.isna(oc.iloc[-1]) or pd.isna(oc.iloc[-2]):
+        return "Yetersiz Veri"
+    son     = oc.iloc[-1]
+    onceki  = oc.iloc[-2]
+    flip    = son - onceki
+    if flip > 0:
+        return "🔵 T-CHANNEL AL (Yön Yeni Döndü ↑)"
+    if flip < 0:
+        return "🔴 T-CHANNEL SAT (Yön Yeni Döndü ↓)"
+    if son == 1:
+        return "🔵 T-Channel Yükseliş Trendi"
+    if son == -1:
+        return "🔴 T-Channel Düşüş Trendi"
+    return "⚪ T-Channel Belirsiz"
+
+
+def tv_obv_macd_tchannel_analiz_et(df: pd.DataFrame, dema_len: int = 9, slow_len: int = 26,
+                                    window_len: int = 28, v_len: int = 14,
+                                    reg_len: int = 2, ma_tipi: str = "DEMA") -> dict:
+    """TradingView göstergesinin tamamını (OBV sentetik fiyat → MACD → lineer
+    regresyon projeksiyonu → T-Channel) tek çağrıda çalıştırır.
+
+    df en az 'Fiyat', 'Hacim', 'High', 'Low' sütunlarını içermeli
+    (bkz. ohlc_hizala). Varsayılan parametreler Pine script'teki
+    varsayılanlarla birebir aynıdır (window_len=28, v_len=14, dema_len=9,
+    slow_len=26, reg_len=2, ma_tipi=DEMA)."""
+    macd = tv_macd_hesapla(df, dema_len, slow_len, window_len, v_len, ma_tipi=ma_tipi)
+    tt1  = tv_linreg_projeksiyon(macd, reg_len)
+    baseline, oc = tv_tchannel(tt1)
+    sinyal = tv_tchannel_sinyali_uret(oc)
+
+    return {
+        "macd_tv":        macd,
+        "tt1":            tt1,
+        "baseline":       baseline,
+        "yon":            oc,
+        "sinyal":         sinyal,
+        "son_yon_deger":  None if oc.empty or pd.isna(oc.iloc[-1]) else int(oc.iloc[-1]),
     }
