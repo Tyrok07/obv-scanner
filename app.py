@@ -3,7 +3,7 @@ app.py — OBV Derinlik Tarayıcı
 ─────────────────────────────
 Sadece UI orkestrasyonu. Tüm hesaplama/veri/AI mantığı şu modüllerden gelir:
     data.py        → CoinGecko + Supabase + piyasa bağlamı
-    indicators.py  → OBV, RSI, MACD, Bollinger
+    indicators.py  → OBV, RSI, MACD, Bollinger, TradingView OBV/MACD/T-Channel portu
     ai.py          → Groq tabanlı AI Guru
     styles.py      → CSS, HTML bileşenleri, Plotly teması
 """
@@ -328,9 +328,14 @@ with sekme2:
                     st.error("Veri çekilemedi.")
                     st.session_state['tab2_analiz'] = None
                 else:
+                    ts_ham   = [o[0] for o in chart_data.get('prices', [])]
                     fiyatlar = [o[1] for o in chart_data.get('prices', [])]
                     hacimler = [o[1] for o in chart_data.get('total_volumes', [])]
-                    df_coin     = pd.DataFrame({"Fiyat": fiyatlar, "Hacim": hacimler})
+                    df_coin     = pd.DataFrame({
+                        "ts":    pd.to_datetime(ts_ham, unit='ms'),
+                        "Fiyat": fiyatlar,
+                        "Hacim": hacimler,
+                    })
                     df_coin     = ind.obv_hesapla(df_coin)
                     periyot     = min(analiz_periyodu, len(df_coin) - 1)
                     sinyal      = ind.uyumsuzluk_kontrol_et(df_coin, periyot, obv_hassasiyet)
@@ -340,6 +345,19 @@ with sekme2:
                     indiktorler = ind.tum_indiktorleri_hesapla(df_coin, periyot)
                     fg_deger, fg_yorum   = data.fear_greed_getir()
                     btc_dom, mcap_degisim = data.btc_dominans_getir()
+
+                    # ─── TradingView OBV/MACD/T-Channel portu ─────────
+                    # Gerçek High/Low verisi CoinGecko'nun /ohlc uç noktasından
+                    # ayrıca çekilip günlük df'e en yakın zaman damgasıyla hizalanır.
+                    tv_analiz = None
+                    try:
+                        ohlc_res = data.coin_ohlc_istegi(secilen_id, grafik_gun)
+                        if ohlc_res.status_code == 200:
+                            ohlc_liste  = ohlc_res.json()
+                            df_coin_ohlc = ind.ohlc_hizala(df_coin, ohlc_liste, ts_kolon="ts")
+                            tv_analiz = ind.tv_obv_macd_tchannel_analiz_et(df_coin_ohlc)
+                    except Exception:
+                        tv_analiz = None
 
                     st.session_state['tab2_analiz'] = {
                         "secilen_id":   secilen_id,
@@ -354,6 +372,7 @@ with sekme2:
                         "fg_yorum":     fg_yorum,
                         "btc_dom":      btc_dom,
                         "mcap_degisim": mcap_degisim,
+                        "tv_analiz":    tv_analiz,
                     }
 
             # ─── KAYITLI ANALİZİ GÖSTER (seçili coin'e aitse) ────────────
@@ -369,6 +388,7 @@ with sekme2:
                 fg_yorum     = analiz.get("fg_yorum")
                 btc_dom      = analiz.get("btc_dom")
                 mcap_degisim = analiz.get("mcap_degisim")
+                tv_analiz    = analiz.get("tv_analiz")
 
                 mevcut_fiyat = degisim_24h = market_cap = hacim_24h = 0
                 if coin_bilgi:
@@ -424,6 +444,28 @@ with sekme2:
                                f"Şu an {grafik_gun} gün seçili — daha geniş indikatör görünümü için "
                                f"Gün Aralığı'nı 30+ yapabilirsin.")
 
+                # ─── TRADINGVIEW OBV/MACD/T-CHANNEL PANELİ ─────────
+                st.markdown("---")
+                st.subheader("📺 TradingView OBV MACD + T-Channel")
+                st.caption("Orijinal Pine Script göstergesinin bu uygulamaya taşınmış hali: "
+                           "OBV sapmasından türetilen sentetik fiyat → DEMA(9) MACD → "
+                           "T-Channel adaptif trend yönü.")
+
+                if tv_analiz is None:
+                    st.warning("⚠️ T-Channel için gerekli OHLC (High/Low) verisi çekilemedi. "
+                               "CoinGecko API limiti veya bağlantı sorunu olabilir.")
+                else:
+                    tv_renk = ui.get_signal_color(tv_analiz["sinyal"])
+                    ui.render_signal_banner(tv_analiz["sinyal"])
+
+                    t1, t2 = st.columns(2)
+                    macd_tv_son = tv_analiz["macd_tv"].iloc[-1] if not tv_analiz["macd_tv"].empty else None
+                    t1.metric("TV-MACD (OBV Sentetik)", f"{macd_tv_son:.4f}" if pd.notna(macd_tv_son) else "—")
+                    yon_metni = {1: "🔵 Yükseliş", -1: "🔴 Düşüş", None: "⚪ Belirsiz"}.get(
+                        tv_analiz["son_yon_deger"], "⚪ Belirsiz"
+                    )
+                    t2.metric("T-Channel Yönü", yon_metni)
+
                 # Takibe al butonu
                 st.markdown("---")
                 coin_adi_str = secilen_lbl.split(" (")[0]
@@ -450,11 +492,16 @@ with sekme2:
                 # ─── AI GURU COIN YORUMU ──────────────────────────
                 st.markdown("---")
                 st.subheader("🧠 AI Guru — Bu Coin İçin Durum Tespiti")
-                st.caption("Yorum; OBV, RSI, MACD, Bollinger, hacim ve piyasa bağlamı verilerine dayanır.")
+                st.caption("Yorum; OBV, RSI, MACD, Bollinger, T-Channel, hacim ve piyasa bağlamı verilerine dayanır.")
 
                 if st.button("🔮 AI Yorumu Al", key=f"ai_coin_{secilen_id}"):
                     with st.spinner("🧠 Guru tüm indikatörleri işliyor..."):
                         obv_trend_y = "yükseliyor" if df_coin['OBV'].iloc[-1] > df_coin['OBV_Trend'].iloc[-1] else "düşüyor"
+
+                        tv_blogu = "Veri yetersiz / çekilemedi."
+                        if tv_analiz is not None:
+                            tv_blogu = f"Sinyal: {tv_analiz['sinyal']} | TV-MACD: {macd_tv_son:.4f}" \
+                                       if pd.notna(macd_tv_son) else f"Sinyal: {tv_analiz['sinyal']}"
 
                         veri_metni = f"""=== KOİN BİLGİSİ ===
 Coin: {coin_adi_str} ({coin_sym_str})
@@ -476,13 +523,16 @@ Bollinger Üst Band: {indiktorler.get('bb_ust', 'N/A')} | Orta: {indiktorler.get
 Bollinger %B: {indiktorler.get('bb_yuzde_b', 'N/A')} — {indiktorler.get('bb_yorum', 'N/A')}
 Son Hacim / Ortalama Hacim: {indiktorler.get('hacim_oran', 'N/A')}x
 
+=== TRADINGVIEW OBV MACD + T-CHANNEL ===
+{tv_blogu}
+
 === PİYASA BAĞLAMI ===
 Fear & Greed Index: {fg_deger if fg_deger else 'N/A'} ({fg_yorum if fg_yorum else 'N/A'})
 BTC Dominansı: %{btc_dom if btc_dom else 'N/A'}
 Global Market Cap 24s Değişim: %{mcap_degisim if mcap_degisim else 'N/A'}
 
 Tüm bu verileri birlikte yorumlayarak kapsamlı bir teknik analiz durum tespiti yap.
-OBV, RSI, MACD ve Bollinger sinyallerinin birbirini teyit edip etmediğini özellikle belirt."""
+OBV, RSI, MACD, Bollinger ve T-Channel sinyallerinin birbirini teyit edip etmediğini özellikle belirt."""
 
                         yorum = ai.guru_yorumu_uret(veri_metni)
 
