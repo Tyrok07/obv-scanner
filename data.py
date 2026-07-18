@@ -75,6 +75,36 @@ def coin_detay_getir(coin_id: str, days: int = 35):
 
 
 @st.cache_data(ttl=300)
+def coin_ohlc_getir(coin_id: str, days: int = 30):
+    """OHLC mumları (open/high/low/close) — TradingView OBV/MACD/T-Channel
+    portu (indicators.tv_obv_macd_tchannel_analiz_et) gerçek High/Low verisine
+    ihtiyaç duyduğu için eklendi. coin_detay_getir ile aynı önbellekleme
+    deseni (ttl=300) kullanılıyor; başarısızlıkta None döner, çağıran taraf
+    (app.py) bunu T-Channel panelini atlamak için kontrol eder.
+
+    Dönüş: [[timestamp_ms, open, high, low, close], ...] ya da None.
+
+    NOT: CoinGecko bu uç noktada gün sayısına göre farklı mum genişliği
+    döndürür — 1-2 gün: 30 dakika, 3-30 gün: 4 saat, 31+ gün: 4 gün.
+    Bu yüzden market_chart'ın günlük çözünürlüğüyle birebir örtüşmez;
+    hizalama indicators.ohlc_hizala() tarafından (en yakın mum eşleştirmesiyle)
+    otomatik yapılır.
+    """
+    try:
+        r = requests.get(
+            f"{CG_BASE}/coins/{coin_id}/ohlc",
+            headers=_cg_headers(),
+            params={"vs_currency": "usd", "days": days},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(ttl=300)
 def coin_bilgi_getir(coin_id: str):
     """Tek coin için anlık fiyat, market cap, hacim vb. detaylı bilgi."""
     try:
@@ -140,6 +170,29 @@ def coin_grafik_istegi(coin_id: str, days: int = 35, retry_on_429: bool = True):
             f"{CG_BASE}/coins/{coin_id}/market_chart",
             headers=_cg_headers(),
             params={"vs_currency": "usd", "days": days, "interval": "daily"},
+            timeout=10,
+        )
+    return r
+
+
+def coin_ohlc_istegi(coin_id: str, days: int = 30, retry_on_429: bool = True):
+    """Tekli coin analiz sekmesi için cache'siz OHLC isteği (429'da bir kez
+    tekrar dener) — coin_grafik_istegi ile aynı desen. app.py bu fonksiyonu
+    kullanıp .status_code / .json() ile kontrol eder; önbellekli sürüm için
+    coin_ohlc_getir() kullanılabilir."""
+    import time
+    r = requests.get(
+        f"{CG_BASE}/coins/{coin_id}/ohlc",
+        headers=_cg_headers(),
+        params={"vs_currency": "usd", "days": days},
+        timeout=10,
+    )
+    if r.status_code == 429 and retry_on_429:
+        time.sleep(8)
+        r = requests.get(
+            f"{CG_BASE}/coins/{coin_id}/ohlc",
+            headers=_cg_headers(),
+            params={"vs_currency": "usd", "days": days},
             timeout=10,
         )
     return r
