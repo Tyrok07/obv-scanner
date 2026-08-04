@@ -66,7 +66,7 @@ obv_hassasiyet  = st.sidebar.select_slider(
 )
 
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
-tarama_butonu = st.sidebar.button("Piyasayı Canlı Tara 🚀", use_container_width=True)
+tarama_butonu = st.sidebar.button("Piyasayı Canlı Tara 🚀", width='stretch')
 
 
 # ─── SESSION STATE ────────────────────────────────────────────────
@@ -141,6 +141,7 @@ with sekme1:
                         df_coin     = ind.obv_hesapla(df_coin)
                         sinyal      = ind.uyumsuzluk_kontrol_et(df_coin, analiz_periyodu, obv_hassasiyet)
                         obv_dengesi = ind.obv_hacim_dengesi(df_coin, analiz_periyodu)
+                        obv_dengesi = obv_dengesi if obv_dengesi is not None else 0
 
                         sonuc_tablosu.append({
                             "Coin Adı":       f"https://www.coingecko.com/en/coins/{coin_id}",
@@ -193,21 +194,21 @@ with sekme1:
             if not pozitif.empty:
                 st.dataframe(
                     pozitif[["Coin Adı Metin","Coin Adı","Sembol","Fiyat ($)","OBV Dengesi %","24s Hacim ($)"]],
-                    column_config=link_config, use_container_width=True, hide_index=True,
+                    column_config=link_config, width='stretch', hide_index=True,
                 )
         with col_orta:
             st.markdown("### 🟢 Hacim Destekli Yükseliş")
             if not hacim_destekli.empty:
                 st.dataframe(
                     hacim_destekli[["Coin Adı Metin","Coin Adı","Sembol","24s Değişim %","OBV Dengesi %","24s Hacim ($)"]],
-                    column_config=link_config, use_container_width=True, hide_index=True,
+                    column_config=link_config, width='stretch', hide_index=True,
                 )
         with col_sag:
             st.markdown("### 🔴 Potansiyel Satış / Kar Al Bölgeleri")
             if not negatif.empty:
                 st.dataframe(
                     negatif[["Coin Adı Metin","Coin Adı","Sembol","Fiyat ($)","OBV Dengesi %","24s Hacim ($)"]],
-                    column_config=link_config, use_container_width=True, hide_index=True,
+                    column_config=link_config, width='stretch', hide_index=True,
                 )
 
         st.markdown("---")
@@ -218,7 +219,7 @@ with sekme1:
                 "24s Hacim ($)": "{:,.0f}", "OBV Dengesi %": "{:,.2f}",
                 "24s Değişim %": "{:,.2f}",
             }).map(ui.style_signal_cell, subset=['OBV Sinyali']),
-            column_config=link_config, use_container_width=True, hide_index=True,
+            column_config=link_config, width='stretch', hide_index=True,
         )
 
         # ─── TAKİBE AL BÖLÜMÜ ────────────────────────────────
@@ -234,7 +235,7 @@ with sekme1:
             secilen_coin_str = st.selectbox("Takibe almak istediğin coin:", list(secenekler.keys()))
             secilen_coin_data = secenekler[secilen_coin_str]
 
-            if st.button("➕ Takip Listesine Ekle", use_container_width=False):
+            if st.button("➕ Takip Listesine Ekle", width='content'):
                 basari, mesaj = data.takibe_ekle(
                     secilen_coin_data['coin_id'],
                     secilen_coin_data['coin_adi'],
@@ -269,7 +270,7 @@ with sekme1:
         st.caption("Yorum, yukarıdaki tabloda hesaplanan gerçek OBV ve fiyat verilerine dayanır; "
                    "AI rastgele tahmin üretmez.")
 
-        if st.button("🔮 AI Piyasa Yorumu Oluştur", use_container_width=False):
+        if st.button("🔮 AI Piyasa Yorumu Oluştur", width='content'):
             with st.spinner("🧠 Guru veriyi inceliyor..."):
                 top_pozitif = pozitif.sort_values("OBV Dengesi %", ascending=False).head(5)
                 top_negatif = negatif.sort_values("OBV Dengesi %", ascending=True).head(5)
@@ -382,6 +383,7 @@ with sekme2:
                 sinyal       = analiz["sinyal"]
                 coin_bilgi   = analiz["coin_bilgi"]
                 obv_dengesi  = analiz["obv_dengesi"]
+                obv_dengesi  = obv_dengesi if obv_dengesi is not None else 0
                 secilen_lbl  = analiz["secilen"]
                 indiktorler  = analiz.get("indiktorler", {})
                 fg_deger     = analiz.get("fg_deger")
@@ -392,10 +394,10 @@ with sekme2:
 
                 mevcut_fiyat = degisim_24h = market_cap = hacim_24h = 0
                 if coin_bilgi:
-                    mevcut_fiyat = coin_bilgi.get('market_data', {}).get('current_price', {}).get('usd', 0)
-                    degisim_24h  = coin_bilgi.get('market_data', {}).get('price_change_percentage_24h', 0)
-                    market_cap   = coin_bilgi.get('market_data', {}).get('market_cap', {}).get('usd', 0)
-                    hacim_24h    = coin_bilgi.get('market_data', {}).get('total_volume', {}).get('usd', 0)
+                    mevcut_fiyat = coin_bilgi.get('market_data', {}).get('current_price', {}).get('usd', 0) or 0
+                    degisim_24h  = coin_bilgi.get('market_data', {}).get('price_change_percentage_24h', 0) or 0
+                    market_cap   = coin_bilgi.get('market_data', {}).get('market_cap', {}).get('usd', 0) or 0
+                    hacim_24h    = coin_bilgi.get('market_data', {}).get('total_volume', {}).get('usd', 0) or 0
 
                     k1, k2, k3, k4 = st.columns(4)
                     k1.metric("💰 Fiyat", f"${mevcut_fiyat:,.6f}", delta=f"%{degisim_24h:.2f}")
@@ -407,7 +409,7 @@ with sekme2:
                 ui.render_signal_banner(sinyal)
                 banner_renk = ui.get_signal_color(sinyal)
 
-                st.plotly_chart(ui.obv_grafigi_ciz(df_coin, secilen_lbl, sinyal), use_container_width=True)
+                st.plotly_chart(ui.obv_grafigi_ciz(df_coin, secilen_lbl, sinyal), width='stretch')
 
                 # ─── TEKNİK İNDİKATÖR PANELİ ─────────────────────
                 st.markdown("---")
@@ -472,7 +474,7 @@ with sekme2:
                 coin_sym_str = secilen_lbl.split("(")[1].replace(")", "")
                 fiyat_str    = mevcut_fiyat
 
-                if st.button("⭐ Takip Listesine Ekle", use_container_width=False):
+                if st.button("⭐ Takip Listesine Ekle", width='content'):
                     basari, mesaj = data.takibe_ekle(secilen_id, coin_adi_str, coin_sym_str, fiyat_str, sinyal)
                     if basari:
                         st.success(f"✅ {coin_adi_str} takip listesine eklendi!")
@@ -548,7 +550,7 @@ with sekme3:
 
     col_yenile, col_bos = st.columns([1, 4])
     with col_yenile:
-        st.button("🔄 Listeyi Güncelle", use_container_width=True)
+        st.button("🔄 Listeyi Güncelle", width='stretch')
 
     takip_verisi = data.takip_listesi_getir()
 
@@ -564,6 +566,10 @@ with sekme3:
                 coin_id         = kayit['coin_id']
                 baslangic_fiyat = kayit.get('baslangic_fiyat', 0) or 0
                 guncel_fiyat, degisim_24h = data.guncel_fiyat_getir(coin_id)
+                # FIX: API'den None dönebilir (ör. hız limiti / bağlantı hatası).
+                # round(None, 2) TypeError fırlattığı için burada güvenceye alınıyor.
+                guncel_fiyat = guncel_fiyat or 0
+                degisim_24h  = degisim_24h or 0
 
                 if baslangic_fiyat > 0 and guncel_fiyat > 0:
                     performans = ((guncel_fiyat - baslangic_fiyat) / baslangic_fiyat) * 100
@@ -613,7 +619,7 @@ with sekme3:
                 })
                 .map(ui.style_performance_cell, subset=["Performans %"])
                 .map(ui.style_signal_cell, subset=["Başlangıç Sinyali", "Güncel Sinyal"]),
-                use_container_width=True, hide_index=True,
+                width='stretch', hide_index=True,
             )
 
             # Özet metrikler
@@ -634,7 +640,7 @@ with sekme3:
             st.subheader("🗑️ Takipten Çıkar")
             cikar_secenekler = {f"{r['Coin']} ({r['Sembol']})": r['_coin_id'] for _, r in df_takip.iterrows()}
             secilen_cikar    = st.selectbox("Takipten çıkarılacak coin:", list(cikar_secenekler.keys()))
-            if st.button("🗑️ Takipten Çıkar", use_container_width=False):
+            if st.button("🗑️ Takipten Çıkar", width='content'):
                 if data.takipten_cikar(cikar_secenekler[secilen_cikar]):
                     st.success(f"✅ {secilen_cikar} takip listesinden çıkarıldı.")
                     st.rerun()
