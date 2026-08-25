@@ -13,7 +13,7 @@ bir teknik analist diliyle yorumlar.
 import streamlit as st
 from groq import Groq
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
 
 GURU_SISTEM_PROMPT = """Sen deneyimli, soğukkanlı bir kripto piyasa teknik analistisin. Lakabın "Guru".
 Sana verilen veriler CoinGecko API'sinden çekilmiş gerçek fiyat ve hacim verilerinden
